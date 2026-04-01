@@ -12,3 +12,9 @@ The training requires **less than 4GB GPU memory**, making it accessible for mos
 Batch size can be adjusted depending on your GPU memory.
 
 Before running the experiment, please make sure your Python and PyTorch environments are properly installed.
+## Requirements
+
+- Python 3.9+
+- PyTorch
+- torchvision
+- tqdm
