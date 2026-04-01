@@ -1,19 +1,3 @@
-"""
-知识蒸馏实验 — CIFAR-10
-Teacher: ResNet-50 (~150M params)  →  Student: ResNet-18 (~11M params)
-硬件目标: RTX 5070 Ti 16GB
-
-运行前安装依赖:
-    pip install torch torchvision tqdm
-
-运行方式:
-    python knowledge_distillation_cifar10.py
-
-大约时间 (5070 Ti):
-    Teacher 预训练  ~15 min (20 epochs)
-    Student 蒸馏    ~8  min (20 epochs)
-    Student 基线    ~8  min (对照组，不使用蒸馏)
-"""
 
 import torch
 import torch.nn as nn
@@ -30,29 +14,27 @@ import time
 # ─────────────────────────────────────────────
 CFG = dict(
     device      = "cuda" if torch.cuda.is_available() else "cpu",
-    batch_size  = 256,          # 5070 Ti 16GB 完全够用，可调到 512
+    batch_size  = 256,          # change accordingly with gpu memory
     num_workers = 4,
-    epochs      = 20,           # 快速验证；正式实验可改 100
+    epochs      = 20,           # 20 for fast prototyping
     lr          = 0.1,
     momentum    = 0.9,
     weight_decay= 5e-4,
     # 蒸馏超参
-    T           = 4.0,          # 温度：控制软标签软化程度，推荐 3-6
-    alpha       = 0.7,          # 蒸馏损失权重；(1-alpha) 分给真实标签损失
+    T           = 4.0,          # Temperature
+    alpha       = 0.7,          # Loss
     seed        = 42,
 )
 
 torch.manual_seed(CFG["seed"])
-torch.backends.cudnn.benchmark = True  # 对固定输入尺寸有加速
+torch.backends.cudnn.benchmark = True  
 DEVICE = CFG["device"]
 print(f"使用设备: {DEVICE}")
 if DEVICE == "cuda":
     print(f"GPU: {torch.cuda.get_device_name(0)}")
     print(f"显存: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
-# ─────────────────────────────────────────────
-#  数据集  (CIFAR-10, 自动下载到 ./data)
-# ─────────────────────────────────────────────
+
 mean = (0.4914, 0.4822, 0.4465)
 std  = (0.2470, 0.2435, 0.2616)
 
@@ -76,20 +58,20 @@ test_loader  = DataLoader(test_set,  batch_size=CFG["batch_size"], shuffle=False
                           num_workers=CFG["num_workers"], pin_memory=True)
 
 # ─────────────────────────────────────────────
-#  模型定义
-#  CIFAR-10 图像是 32×32，需要把 ResNet 的第一层卷积改小
+#  Model definition
+#  
 # ─────────────────────────────────────────────
 def make_resnet50_teacher(num_classes=10):
-    """Teacher: ResNet-50，约 150M 参数"""
+    """Teacher: ResNet-50，~ 150M parameters"""
     model = models.resnet50(weights=None)
-    # 适配 32×32 输入
+    
     model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
     model.maxpool = nn.Identity()
     model.fc = nn.Linear(model.fc.in_features, num_classes)
     return model
 
 def make_resnet18_student(num_classes=10):
-    """Student: ResNet-18，约 11M 参数"""
+    """Student: ResNet-18，~ 11M parameters"""
     model = models.resnet18(weights=None)
     model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
     model.maxpool = nn.Identity()
@@ -97,26 +79,20 @@ def make_resnet18_student(num_classes=10):
     return model
 
 # ─────────────────────────────────────────────
-#  蒸馏损失函数
-#  L_total = alpha * L_KL(soft) + (1-alpha) * L_CE(hard)
-#  注意：KL散度要乘以 T^2 以补偿梯度幅度
+#  Loss function
+#  L_total = alpha * L_KL(soft) + (1-alpha) * L_CE(hard) 
 # ─────────────────────────────────────────────
 def distillation_loss(student_logits, teacher_logits, true_labels, T, alpha):
-    # 软标签损失（KL散度）
     soft_student = F.log_softmax(student_logits / T, dim=1)
     soft_teacher = F.softmax(teacher_logits / T, dim=1)
     loss_kl = F.kl_div(soft_student, soft_teacher, reduction="batchmean") * (T ** 2)
-
-    # 真实标签损失（交叉熵）
+    
     loss_ce = F.cross_entropy(student_logits, true_labels)
 
     return alpha * loss_kl + (1.0 - alpha) * loss_ce
 
-# ─────────────────────────────────────────────
-#  通用训练 / 评估函数
-# ─────────────────────────────────────────────
 def train_standard(model, loader, optimizer, epoch):
-    """标准训练（用于 Teacher 和基线 Student）"""
+    """Standard train（For Teacher and Student）"""
     model.train()
     total_loss, correct, total = 0.0, 0, 0
     pbar = tqdm(loader, desc=f"  Train Epoch {epoch}", leave=False)
@@ -134,13 +110,13 @@ def train_standard(model, loader, optimizer, epoch):
     return total_loss / total, correct / total
 
 def train_distill(student, teacher, loader, optimizer, epoch, T, alpha):
-    """蒸馏训练"""
+    """Distillation train"""
     student.train()
     teacher.eval()
     total_loss, correct, total = 0.0, 0, 0
     pbar = tqdm(loader, desc=f"  Distill Epoch {epoch}", leave=False)
     with torch.no_grad():
-        pass  # teacher 不需要梯度，但要在 forward 时关闭
+        pass  
     for imgs, labels in pbar:
         imgs, labels = imgs.to(DEVICE), labels.to(DEVICE)
         optimizer.zero_grad()
@@ -171,18 +147,18 @@ def count_params(model):
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 # ─────────────────────────────────────────────
-#  实验主流程
+#  Main experiment
 # ─────────────────────────────────────────────
 def run_experiment():
     epochs = CFG["epochs"]
     results = {}
 
-    # ── 阶段 1: 训练 Teacher ────────────────────
+    # ── 阶段 1: Pre-train ────────────────────
     print("\n" + "="*55)
-    print("阶段 1 / 3  Teacher (ResNet-50) 预训练")
+    print("Stage 1 / 3  Teacher (ResNet-50) Pre-train")
     print("="*55)
     teacher = make_resnet50_teacher().to(DEVICE)
-    print(f"Teacher 参数量: {count_params(teacher)/1e6:.1f}M")
+    print(f"Teacher parameters: {count_params(teacher)/1e6:.1f}M")
 
     opt_t = optim.SGD(teacher.parameters(), lr=CFG["lr"],
                       momentum=CFG["momentum"], weight_decay=CFG["weight_decay"])
@@ -196,17 +172,17 @@ def run_experiment():
             acc = evaluate(teacher, test_loader)
             print(f"  Epoch {ep:3d}/{epochs}  Teacher test acc: {100*acc:.2f}%")
     teacher_acc = evaluate(teacher, test_loader)
-    print(f"Teacher 最终 test acc: {100*teacher_acc:.2f}%  ({time.time()-t0:.0f}s)")
+    print(f"Teacher final test acc: {100*teacher_acc:.2f}%  ({time.time()-t0:.0f}s)")
     results["teacher"] = teacher_acc
     torch.save(teacher.state_dict(), "teacher_resnet50.pth")
 
-    # ── 阶段 2: 蒸馏训练 Student ───────────────
+    # ── Stage 2: Distillation Student ───────────────
     print("\n" + "="*55)
-    print("阶段 2 / 3  Student (ResNet-18) 知识蒸馏")
+    print("Stage 2 / 3  Student (ResNet-18) knowledge distillation")
     print(f"  T={CFG['T']}, alpha={CFG['alpha']}")
     print("="*55)
     student_kd = make_resnet18_student().to(DEVICE)
-    print(f"Student 参数量: {count_params(student_kd)/1e6:.1f}M")
+    print(f"Student parameters: {count_params(student_kd)/1e6:.1f}M")
 
     opt_s = optim.SGD(student_kd.parameters(), lr=CFG["lr"],
                       momentum=CFG["momentum"], weight_decay=CFG["weight_decay"])
@@ -220,12 +196,12 @@ def run_experiment():
             acc = evaluate(student_kd, test_loader)
             print(f"  Epoch {ep:3d}/{epochs}  Student(KD) test acc: {100*acc:.2f}%")
     kd_acc = evaluate(student_kd, test_loader)
-    print(f"Student(KD) 最终 test acc: {100*kd_acc:.2f}%  ({time.time()-t0:.0f}s)")
+    print(f"Student(KD) final test acc: {100*kd_acc:.2f}%  ({time.time()-t0:.0f}s)")
     results["student_kd"] = kd_acc
 
-    # ── 阶段 3: 基线 Student (无蒸馏，对照组) ────
+    # ── Stage 3:  Student (no distillation，for comparison) ────
     print("\n" + "="*55)
-    print("阶段 3 / 3  Student (ResNet-18) 基线 (无蒸馏)")
+    print("阶段 3 / 3  Student (ResNet-18) ")
     print("="*55)
     student_base = make_resnet18_student().to(DEVICE)
 
@@ -241,19 +217,19 @@ def run_experiment():
             acc = evaluate(student_base, test_loader)
             print(f"  Epoch {ep:3d}/{epochs}  Student(base) test acc: {100*acc:.2f}%")
     base_acc = evaluate(student_base, test_loader)
-    print(f"Student(base) 最终 test acc: {100*base_acc:.2f}%  ({time.time()-t0:.0f}s)")
+    print(f"Student(base) final test acc: {100*base_acc:.2f}%  ({time.time()-t0:.0f}s)")
     results["student_base"] = base_acc
 
-    # ── 汇总 ──────────────────────────────────
+    # ── Conclusion ──────────────────────────────────
     print("\n" + "="*55)
-    print("实验结果汇总")
+    print("Conclusion")
     print("="*55)
     print(f"  Teacher  (ResNet-50, 150M):          {100*results['teacher']:.2f}%")
-    print(f"  Student  (ResNet-18,  11M, 无蒸馏): {100*results['student_base']:.2f}%")
-    print(f"  Student  (ResNet-18,  11M, 蒸馏):   {100*results['student_kd']:.2f}%")
-    print(f"\n  蒸馏增益 vs 基线: +{100*(results['student_kd']-results['student_base']):.2f}%")
-    print(f"  Teacher 精度损失: -{100*(results['teacher']-results['student_kd']):.2f}%")
-    print(f"  参数压缩比: {count_params(teacher)/count_params(student_kd):.1f}×")
+    print(f"  Student  (ResNet-18,  11M, no distillation): {100*results['student_base']:.2f}%")
+    print(f"  Student  (ResNet-18,  11M, distilled):   {100*results['student_kd']:.2f}%")
+    print(f"\n  Distilled vs non-distilled: +{100*(results['student_kd']-results['student_base']):.2f}%")
+    print(f"  Teacher Acc loss: -{100*(results['teacher']-results['student_kd']):.2f}%")
+    print(f"  Parameter compression ratio: {count_params(teacher)/count_params(student_kd):.1f}×")
     print("="*55)
 
     return results
