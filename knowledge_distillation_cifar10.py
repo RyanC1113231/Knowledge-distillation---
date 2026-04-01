@@ -10,7 +10,7 @@ from tqdm import tqdm
 import time
 
 # ─────────────────────────────────────────────
-#  配置
+#  Setup
 # ─────────────────────────────────────────────
 CFG = dict(
     device      = "cuda" if torch.cuda.is_available() else "cpu",
@@ -20,7 +20,7 @@ CFG = dict(
     lr          = 0.1,
     momentum    = 0.9,
     weight_decay= 5e-4,
-    # 蒸馏超参
+    # Distillation parameters
     T           = 4.0,          # Temperature
     alpha       = 0.7,          # Loss
     seed        = 42,
@@ -29,10 +29,10 @@ CFG = dict(
 torch.manual_seed(CFG["seed"])
 torch.backends.cudnn.benchmark = True  
 DEVICE = CFG["device"]
-print(f"使用设备: {DEVICE}")
+print(f"Device: {DEVICE}")
 if DEVICE == "cuda":
     print(f"GPU: {torch.cuda.get_device_name(0)}")
-    print(f"显存: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+    print(f"Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
 
 
 mean = (0.4914, 0.4822, 0.4465)
